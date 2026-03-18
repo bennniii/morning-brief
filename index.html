@@ -10,8 +10,7 @@
 body {
   background: #0f0f1a; color: #eaeaea;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-  padding: 0 16px 40px; -webkit-font-smoothing: antialiased;
-  min-height: 100vh;
+  padding: 0 16px 40px; -webkit-font-smoothing: antialiased; min-height: 100vh;
 }
 .header { text-align: center; padding: 28px 0 20px; }
 .header .icon { font-size: 40px; margin-bottom: 6px; }
@@ -20,139 +19,116 @@ body {
 </style>
 </head>
 <body>
-<div id="app"><div class="header"><div class="icon">☀️</div><h1>Morning Brief</h1><p class="date" id="loading">Laden...</p></div></div>
+<div id="app">
+  <div class="header">
+    <div class="icon">☀️</div><h1>Morning Brief</h1>
+    <p class="date" id="loading">Laden...</p>
+  </div>
+</div>
 <script>
-const KEY = 'dda3d26a2edfc1a2f9e78481c9de15d2';
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
-// --- Crypto: AES-like XOR cipher with key stretching ---
-function decrypt(encHex) {
-  const keyBytes = [];
-  for (let i = 0; i < KEY.length; i += 2) keyBytes.push(parseInt(KEY.substr(i, 2), 16));
-  const encBytes = [];
-  for (let i = 0; i < encHex.length; i += 2) encBytes.push(parseInt(encHex.substr(i, 2), 16));
-  const dec = encBytes.map((b, i) => b ^ keyBytes[i % keyBytes.length]);
-  return new TextDecoder().decode(new Uint8Array(dec));
+// --- AES-256-GCM Decryption (Web Crypto API) ---
+// Key is ONLY passed via URL fragment — never stored in repo
+async function aesDecrypt(encB64, keyHex) {
+  const keyBytes = new Uint8Array(keyHex.match(/.{2}/g).map(h => parseInt(h, 16)));
+  const encBytes = Uint8Array.from(atob(encB64), c => c.charCodeAt(0));
+  // First 12 bytes = IV, rest = ciphertext
+  const iv = encBytes.slice(0, 12);
+  const ciphertext = encBytes.slice(12);
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  return new TextDecoder().decode(plain);
 }
 
 // --- Ignore state (localStorage) ---
-const IGN_KEY = 'mb_ignored';
-function getIgnored() { try { return JSON.parse(localStorage.getItem(IGN_KEY) || '{}'); } catch { return {}; } }
-function setIgnored(d) { localStorage.setItem(IGN_KEY, JSON.stringify(d)); }
-function isIgnored(src, id) { return (getIgnored()[src] || []).includes(id); }
-function ignoreItem(src, id) {
-  const g = getIgnored(); if (!g[src]) g[src] = [];
-  if (!g[src].includes(id)) g[src].push(id); setIgnored(g);
-}
+const IGN = 'mb_ign';
+function getIgn() { try { return JSON.parse(localStorage.getItem(IGN)||'{}'); } catch { return {}; } }
+function setIgn(d) { localStorage.setItem(IGN, JSON.stringify(d)); }
+function isIgn(s,id) { return (getIgn()[s]||[]).includes(id); }
+function ign(s,id) { const g=getIgn(); if(!g[s])g[s]=[]; if(!g[s].includes(id))g[s].push(id); setIgn(g); }
 
 // --- Open links ---
-function openLink(url) {
+function ol(url) {
   if (!url) return;
   if (url.startsWith('tg://')) {
-    if (tg) {
-      // Convert tg:// to https://t.me/ format for openTelegramLink
-      if (url.includes('resolve?domain=')) {
-        tg.openTelegramLink('https://t.me/' + url.split('domain=')[1]);
-      } else if (url.includes('user?id=')) {
-        // openTelegramLink doesn't support user IDs directly, try opentgbot deep link
-        window.location.href = url;
-      }
+    if (tg && url.includes('resolve?domain=')) {
+      tg.openTelegramLink('https://t.me/' + url.split('domain=')[1]);
     } else { window.location.href = url; }
-  } else if (tg) {
-    tg.openLink(url, { try_instant_view: false });
-  } else { window.open(url, '_blank'); }
+  } else if (tg) { tg.openLink(url, {try_instant_view:false}); }
+  else { window.open(url,'_blank'); }
 }
 
 // --- Render ---
-function renderItem(item, source) {
-  const ignored = isIgnored(source, item.id);
-  const isUrgent = item.urgency === '🔴';
-  return `
-    <div class="item${ignored ? ' ignored' : ''}" style="
-      display:flex; align-items:center; gap:12px; padding:14px 16px;
-      background:${ignored ? '#12121f' : '#1a1a2e'}; border-radius:16px; margin-bottom:8px;
-      border-left:3px solid ${isUrgent ? '#ef4444' : '#f59e0b'};
-      opacity:${ignored ? '0.35' : '1'}; transition:all 0.3s;
-      ${ignored ? 'text-decoration:line-through;' : ''}
-    ">
-      <div style="flex:1;min-width:0;cursor:${item.url && !ignored ? 'pointer' : 'default'}"
-           onclick="${item.url && !ignored ? `openLink('${item.url.replace(/'/g, "\\'")}')` : ''}">
-        <div style="font-weight:600;font-size:15px;color:${item.url ? '#60a5fa' : '#eaeaea'};margin-bottom:3px">
-          ${item.short_name}
-        </div>
-        <div style="font-size:13px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-          ${item.label.replace(item.short_name, '').replace(/^[\s:]+/, '')}
-        </div>
-      </div>
-      ${ignored ? '' : `
-        <button onclick="event.stopPropagation();ignoreItem('${source}','${item.id}');this.closest('.item').style.opacity='0.35';this.closest('.item').style.textDecoration='line-through';this.remove()" style="
-          width:36px;height:36px;border-radius:50%;border:none;
-          background:rgba(255,255,255,0.05);color:#6b7280;font-size:16px;
-          cursor:pointer;flex-shrink:0
-        ">✕</button>
-      `}
-    </div>`;
-}
-
-function renderSection(emoji, title, items, source) {
-  if (!items || !items.length) return '';
-  const visible = items.filter(i => !isIgnored(source, i.id));
-  const hiddenCount = items.length - visible.length;
-  return `
-    <div style="margin-bottom:24px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:0 4px">
-        <span style="font-size:18px">${emoji}</span>
-        <span style="font-weight:700;font-size:13px;letter-spacing:0.5px;text-transform:uppercase;color:#6b7280">${title}</span>
-        ${hiddenCount ? `<span style="font-size:12px;color:#4b5563;margin-left:auto">${hiddenCount} ignoriert</span>` : ''}
-      </div>
-      ${visible.map(i => renderItem(i, source)).join('')}
-      ${items.filter(i => isIgnored(source, i.id)).map(i => renderItem(i, source)).join('')}
-    </div>`;
-}
-
-function render(data) {
-  const stats = data.stats || {};
-  const urgent = stats.urgent || 0;
-  const total = stats.total || 0;
-
-  document.getElementById('app').innerHTML = `
-    <div class="header">
-      <div class="icon">☀️</div>
-      <h1>Morning Brief</h1>
-      <p class="date">${data.date || 'heute'}</p>
+function ri(item, src) {
+  const ig = isIgn(src, item.id), ur = item.urgency==='🔴';
+  const esc = (item.url||'').replace(/'/g,"\\'");
+  return `<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;
+    background:${ig?'#12121f':'#1a1a2e'};border-radius:16px;margin-bottom:8px;
+    border-left:3px solid ${ur?'#ef4444':'#f59e0b'};
+    opacity:${ig?'0.35':'1'};transition:all .3s;${ig?'text-decoration:line-through':''}">
+    <div style="flex:1;min-width:0;cursor:${item.url&&!ig?'pointer':'default'}"
+         onclick="${item.url&&!ig?`ol('${esc}')`:''}" >
+      <div style="font-weight:600;font-size:15px;color:${item.url?'#60a5fa':'#eaeaea'};margin-bottom:3px">${item.short_name}</div>
+      <div style="font-size:13px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${item.label.replace(item.short_name,'').replace(/^[\\s:]+/,'')}</div>
     </div>
-    ${urgent > 0 ? `
-      <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);
-        border-radius:16px;padding:12px 16px;margin-bottom:24px;text-align:center;font-size:14px;font-weight:600">
-        <span style="color:#ef4444">${urgent} dringend</span>
-        <span style="color:#6b7280"> von ${total} Nachrichten</span>
-      </div>` : ''}
-    ${renderSection('📬', 'Goldene Krone', data.krone, 'email')}
-    ${renderSection('✉️', 'E-Mail', data.email, 'email')}
-    ${renderSection('💬', 'Telegram', data.telegram, 'telegram')}
-    ${renderSection('📱', 'iMessage', data.imessage, 'imessage')}
+    ${ig?'':`<button onclick="event.stopPropagation();ign('${src}','${item.id}');const p=this.parentElement;p.style.opacity='0.35';p.style.textDecoration='line-through';this.remove()" style="
+      width:36px;height:36px;border-radius:50%;border:none;
+      background:rgba(255,255,255,0.05);color:#6b7280;font-size:16px;cursor:pointer;flex-shrink:0">✕</button>`}
+  </div>`;
+}
+
+function rs(e, t, items, src) {
+  if (!items||!items.length) return '';
+  const v=items.filter(i=>!isIgn(src,i.id)), h=items.length-v.length;
+  return `<div style="margin-bottom:24px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:0 4px">
+      <span style="font-size:18px">${e}</span>
+      <span style="font-weight:700;font-size:13px;letter-spacing:.5px;text-transform:uppercase;color:#6b7280">${t}</span>
+      ${h?`<span style="font-size:12px;color:#4b5563;margin-left:auto">${h} ignoriert</span>`:''}
+    </div>
+    ${v.map(i=>ri(i,src)).join('')}
+    ${items.filter(i=>isIgn(src,i.id)).map(i=>ri(i,src)).join('')}
+  </div>`;
+}
+
+function render(d) {
+  const s=d.stats||{}, u=s.urgent||0, t=s.total||0;
+  document.getElementById('app').innerHTML = `
+    <div class="header"><div class="icon">☀️</div><h1>Morning Brief</h1><p class="date">${d.date||'heute'}</p></div>
+    ${u>0?`<div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);
+      border-radius:16px;padding:12px 16px;margin-bottom:24px;text-align:center;font-size:14px;font-weight:600">
+      <span style="color:#ef4444">${u} dringend</span>
+      <span style="color:#6b7280"> von ${t} Nachrichten</span></div>`:''}
+    ${rs('📬','Goldene Krone',d.krone,'email')}
+    ${rs('✉️','E-Mail',d.email,'email')}
+    ${rs('💬','Telegram',d.telegram,'telegram')}
+    ${rs('📱','iMessage',d.imessage,'imessage')}
     <div style="text-align:center;padding:16px 0;font-size:12px;color:#4b5563">
-      💰 ${stats.cost || '~$0.10'} · ${stats.tokens || '~30k tokens'}
+      💰 ${s.cost||'~$0.10'} · ${s.tokens||'~30k tokens'}
     </div>`;
 }
 
-// --- Load data ---
-async function loadData() {
+// --- Load ---
+async function load() {
   try {
-    // Fetch encrypted data from same origin
-    const resp = await fetch('data.enc?t=' + Date.now());
-    if (!resp.ok) throw new Error('No data');
-    const encHex = await resp.text();
-    const jsonStr = decrypt(encHex.trim());
-    const data = JSON.parse(jsonStr);
-    render(data);
-  } catch (e) {
+    // Get key from URL fragment: #key=HEX
+    const params = new URLSearchParams(location.hash.slice(1));
+    const key = params.get('key');
+    if (!key) throw new Error('No key in URL');
+
+    const resp = await fetch('data.enc?t='+Date.now());
+    if (!resp.ok) throw new Error('No data file');
+    const encB64 = (await resp.text()).trim();
+    const json = await aesDecrypt(encB64, key);
+    render(JSON.parse(json));
+  } catch(e) {
     document.getElementById('loading').textContent = 'Keine Daten vorhanden.';
-    console.error(e);
+    console.error('Load error:', e);
   }
 }
-loadData();
+load();
 </script>
 </body>
 </html>
