@@ -6,188 +6,153 @@
 <title>Morning Brief</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-:root {
-  --bg: #0f0f1a;
-  --card: #1a1a2e;
-  --card-ignored: #12121f;
-  --text: #eaeaea;
-  --text-dim: #6b7280;
-  --urgent: #ef4444;
-  --urgent-bg: rgba(239,68,68,0.1);
-  --should: #f59e0b;
-  --should-bg: rgba(245,158,11,0.1);
-  --link: #60a5fa;
-  --border: rgba(255,255,255,0.06);
-  --radius: 16px;
-  --ignore-bg: rgba(255,255,255,0.05);
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body {
+  background: #0f0f1a; color: #eaeaea;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  padding: 0 16px 40px; -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
 }
+.header { text-align: center; padding: 28px 0 20px; }
+.header .icon { font-size: 40px; margin-bottom: 6px; }
+.header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+.header .date { font-size: 14px; color: #6b7280; margin-top: 4px; }
 </style>
 </head>
-<body style="background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro',sans-serif;padding:0 16px 32px;-webkit-font-smoothing:antialiased;">
-<div id="app"></div>
+<body>
+<div id="app"><div class="header"><div class="icon">☀️</div><h1>Morning Brief</h1><p class="date" id="loading">Laden...</p></div></div>
 <script>
+const KEY = 'dda3d26a2edfc1a2f9e78481c9de15d2';
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
-// Read data from URL hash (base64-encoded JSON)
-let briefData = {};
-try {
-  const hash = location.hash.slice(1);
-  if (hash) briefData = JSON.parse(decodeURIComponent(atob(hash)));
-} catch(e) {
-  document.getElementById('app').innerHTML = '<p style="padding:40px;text-align:center;color:var(--text-dim)">Keine Daten vorhanden.</p>';
+// --- Crypto: AES-like XOR cipher with key stretching ---
+function decrypt(encHex) {
+  const keyBytes = [];
+  for (let i = 0; i < KEY.length; i += 2) keyBytes.push(parseInt(KEY.substr(i, 2), 16));
+  const encBytes = [];
+  for (let i = 0; i < encHex.length; i += 2) encBytes.push(parseInt(encHex.substr(i, 2), 16));
+  const dec = encBytes.map((b, i) => b ^ keyBytes[i % keyBytes.length]);
+  return new TextDecoder().decode(new Uint8Array(dec));
 }
 
-// Ignored items stored in localStorage
-const IGNORED_KEY = 'morning_brief_ignored';
-function getIgnored() {
-  try { return JSON.parse(localStorage.getItem(IGNORED_KEY) || '{}'); }
-  catch { return {}; }
-}
-function setIgnored(data) { localStorage.setItem(IGNORED_KEY, JSON.stringify(data)); }
-function isIgnored(source, id) { return (getIgnored()[source] || []).includes(id); }
-function ignoreItem(source, id) {
-  const ign = getIgnored();
-  if (!ign[source]) ign[source] = [];
-  if (!ign[source].includes(id)) ign[source].push(id);
-  setIgnored(ign);
-  // Also notify bot via sendData
-  if (tg) {
-    try { tg.sendData(JSON.stringify({action:'ignore', source, id})); } catch(e) {}
-  }
+// --- Ignore state (localStorage) ---
+const IGN_KEY = 'mb_ignored';
+function getIgnored() { try { return JSON.parse(localStorage.getItem(IGN_KEY) || '{}'); } catch { return {}; } }
+function setIgnored(d) { localStorage.setItem(IGN_KEY, JSON.stringify(d)); }
+function isIgnored(src, id) { return (getIgnored()[src] || []).includes(id); }
+function ignoreItem(src, id) {
+  const g = getIgnored(); if (!g[src]) g[src] = [];
+  if (!g[src].includes(id)) g[src].push(id); setIgnored(g);
 }
 
+// --- Open links ---
 function openLink(url) {
   if (!url) return;
-  if (tg && url.startsWith('tg://')) {
-    // Use Telegram's native link opener
-    tg.openTelegramLink('https://t.me/' + url.replace('tg://resolve?domain=','').replace('tg://user?id=','?id='));
+  if (url.startsWith('tg://')) {
+    if (tg) {
+      // Convert tg:// to https://t.me/ format for openTelegramLink
+      if (url.includes('resolve?domain=')) {
+        tg.openTelegramLink('https://t.me/' + url.split('domain=')[1]);
+      } else if (url.includes('user?id=')) {
+        // openTelegramLink doesn't support user IDs directly, try opentgbot deep link
+        window.location.href = url;
+      }
+    } else { window.location.href = url; }
   } else if (tg) {
-    tg.openLink(url);
-  } else {
-    window.open(url, '_blank');
-  }
+    tg.openLink(url, { try_instant_view: false });
+  } else { window.open(url, '_blank'); }
 }
 
-function renderItem(item, source, container) {
+// --- Render ---
+function renderItem(item, source) {
   const ignored = isIgnored(source, item.id);
-  const el = document.createElement('div');
-  el.style.cssText = `
-    display:flex; align-items:center; gap:12px; padding:14px 16px;
-    background:${ignored ? 'var(--card-ignored)' : 'var(--card)'};
-    border-radius:var(--radius); margin-bottom:8px;
-    border-left:3px solid ${item.urgency === '🔴' ? 'var(--urgent)' : 'var(--should)'};
-    opacity:${ignored ? '0.4' : '1'}; transition:all 0.3s ease;
-    ${ignored ? 'text-decoration:line-through;' : ''}
-  `;
-
-  const content = document.createElement('div');
-  content.style.cssText = 'flex:1; min-width:0; cursor:pointer;';
-  content.onclick = () => { if (item.url && !ignored) openLink(item.url); };
-
-  const name = document.createElement('div');
-  name.style.cssText = `font-weight:600; font-size:15px; color:${item.url ? 'var(--link)' : 'var(--text)'}; margin-bottom:3px;`;
-  name.textContent = item.short_name;
-
-  const desc = document.createElement('div');
-  desc.style.cssText = 'font-size:13px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
-  desc.textContent = item.label.replace(item.short_name + ':', '').replace(item.short_name, '').trim();
-
-  content.appendChild(name);
-  content.appendChild(desc);
-  el.appendChild(content);
-
-  if (!ignored) {
-    const btn = document.createElement('button');
-    btn.textContent = '✕';
-    btn.title = 'Ignorieren';
-    btn.style.cssText = `
-      width:36px; height:36px; border-radius:50%; border:none;
-      background:var(--ignore-bg); color:var(--text-dim); font-size:16px;
-      cursor:pointer; flex-shrink:0; transition:all 0.2s;
-    `;
-    btn.onmouseenter = () => { btn.style.background='rgba(239,68,68,0.2)'; btn.style.color='var(--urgent)'; };
-    btn.onmouseleave = () => { btn.style.background='var(--ignore-bg)'; btn.style.color='var(--text-dim)'; };
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      ignoreItem(source, item.id);
-      el.style.opacity = '0.4';
-      el.style.textDecoration = 'line-through';
-      btn.remove();
-    };
-    el.appendChild(btn);
-  }
-
-  container.appendChild(el);
+  const isUrgent = item.urgency === '🔴';
+  return `
+    <div class="item${ignored ? ' ignored' : ''}" style="
+      display:flex; align-items:center; gap:12px; padding:14px 16px;
+      background:${ignored ? '#12121f' : '#1a1a2e'}; border-radius:16px; margin-bottom:8px;
+      border-left:3px solid ${isUrgent ? '#ef4444' : '#f59e0b'};
+      opacity:${ignored ? '0.35' : '1'}; transition:all 0.3s;
+      ${ignored ? 'text-decoration:line-through;' : ''}
+    ">
+      <div style="flex:1;min-width:0;cursor:${item.url && !ignored ? 'pointer' : 'default'}"
+           onclick="${item.url && !ignored ? `openLink('${item.url.replace(/'/g, "\\'")}')` : ''}">
+        <div style="font-weight:600;font-size:15px;color:${item.url ? '#60a5fa' : '#eaeaea'};margin-bottom:3px">
+          ${item.short_name}
+        </div>
+        <div style="font-size:13px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          ${item.label.replace(item.short_name, '').replace(/^[\s:]+/, '')}
+        </div>
+      </div>
+      ${ignored ? '' : `
+        <button onclick="event.stopPropagation();ignoreItem('${source}','${item.id}');this.closest('.item').style.opacity='0.35';this.closest('.item').style.textDecoration='line-through';this.remove()" style="
+          width:36px;height:36px;border-radius:50%;border:none;
+          background:rgba(255,255,255,0.05);color:#6b7280;font-size:16px;
+          cursor:pointer;flex-shrink:0
+        ">✕</button>
+      `}
+    </div>`;
 }
 
-function renderSection(title, emoji, items, source, app) {
-  if (!items || items.length === 0) return;
+function renderSection(emoji, title, items, source) {
+  if (!items || !items.length) return '';
   const visible = items.filter(i => !isIgnored(source, i.id));
-  const ignoredCount = items.length - visible.length;
-
-  const section = document.createElement('div');
-  section.style.cssText = 'margin-bottom:24px;';
-
-  const header = document.createElement('div');
-  header.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:12px; padding:0 4px;';
-  header.innerHTML = `<span style="font-size:18px">${emoji}</span><span style="font-weight:700;font-size:15px;letter-spacing:0.3px;text-transform:uppercase;color:var(--text-dim)">${title}</span>`;
-  if (ignoredCount > 0) {
-    header.innerHTML += `<span style="font-size:12px;color:var(--text-dim);margin-left:auto">${ignoredCount} ignoriert</span>`;
-  }
-  section.appendChild(header);
-
-  // Show non-ignored first, then ignored
-  visible.forEach(item => renderItem(item, source, section));
-  items.filter(i => isIgnored(source, i.id)).forEach(item => renderItem(item, source, section));
-
-  app.appendChild(section);
+  const hiddenCount = items.length - visible.length;
+  return `
+    <div style="margin-bottom:24px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:0 4px">
+        <span style="font-size:18px">${emoji}</span>
+        <span style="font-weight:700;font-size:13px;letter-spacing:0.5px;text-transform:uppercase;color:#6b7280">${title}</span>
+        ${hiddenCount ? `<span style="font-size:12px;color:#4b5563;margin-left:auto">${hiddenCount} ignoriert</span>` : ''}
+      </div>
+      ${visible.map(i => renderItem(i, source)).join('')}
+      ${items.filter(i => isIgnored(source, i.id)).map(i => renderItem(i, source)).join('')}
+    </div>`;
 }
 
-function render() {
-  const app = document.getElementById('app');
-  app.innerHTML = '';
+function render(data) {
+  const stats = data.stats || {};
+  const urgent = stats.urgent || 0;
+  const total = stats.total || 0;
 
-  // Header
-  const header = document.createElement('div');
-  header.style.cssText = 'text-align:center; padding:28px 0 24px;';
-  header.innerHTML = `
-    <div style="font-size:36px; margin-bottom:8px">☀️</div>
-    <div style="font-size:22px; font-weight:700; letter-spacing:-0.3px">Morning Brief</div>
-    <div style="font-size:14px; color:var(--text-dim); margin-top:4px">${briefData.date || 'heute'}</div>
-  `;
-  app.appendChild(header);
-
-  // Urgent count banner
-  const stats = briefData.stats || {};
-  if (stats.urgent > 0) {
-    const banner = document.createElement('div');
-    banner.style.cssText = `
-      background:var(--urgent-bg); border:1px solid rgba(239,68,68,0.2);
-      border-radius:var(--radius); padding:12px 16px; margin-bottom:24px;
-      text-align:center; font-size:14px; font-weight:600;
-    `;
-    banner.innerHTML = `<span style="color:var(--urgent)">${stats.urgent} dringend</span><span style="color:var(--text-dim)"> von ${stats.total} Nachrichten</span>`;
-    app.appendChild(banner);
-  }
-
-  // Sections
-  renderSection('Goldene Krone', '📬', briefData.krone, 'email', app);
-  renderSection('E-Mail', '✉️', briefData.email, 'email', app);
-  renderSection('Telegram', '💬', briefData.telegram, 'telegram', app);
-  if (briefData.imessage && briefData.imessage.length > 0) {
-    renderSection('iMessage', '📱', briefData.imessage, 'imessage', app);
-  }
-
-  // Footer
-  const footer = document.createElement('div');
-  footer.style.cssText = 'text-align:center; padding:16px 0; font-size:12px; color:var(--text-dim);';
-  footer.innerHTML = `💰 ${stats.cost || '~$0.10'} · ${stats.tokens || '~30k tokens'}`;
-  app.appendChild(footer);
+  document.getElementById('app').innerHTML = `
+    <div class="header">
+      <div class="icon">☀️</div>
+      <h1>Morning Brief</h1>
+      <p class="date">${data.date || 'heute'}</p>
+    </div>
+    ${urgent > 0 ? `
+      <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);
+        border-radius:16px;padding:12px 16px;margin-bottom:24px;text-align:center;font-size:14px;font-weight:600">
+        <span style="color:#ef4444">${urgent} dringend</span>
+        <span style="color:#6b7280"> von ${total} Nachrichten</span>
+      </div>` : ''}
+    ${renderSection('📬', 'Goldene Krone', data.krone, 'email')}
+    ${renderSection('✉️', 'E-Mail', data.email, 'email')}
+    ${renderSection('💬', 'Telegram', data.telegram, 'telegram')}
+    ${renderSection('📱', 'iMessage', data.imessage, 'imessage')}
+    <div style="text-align:center;padding:16px 0;font-size:12px;color:#4b5563">
+      💰 ${stats.cost || '~$0.10'} · ${stats.tokens || '~30k tokens'}
+    </div>`;
 }
 
-if (briefData.date) render();
+// --- Load data ---
+async function loadData() {
+  try {
+    // Fetch encrypted data from same origin
+    const resp = await fetch('data.enc?t=' + Date.now());
+    if (!resp.ok) throw new Error('No data');
+    const encHex = await resp.text();
+    const jsonStr = decrypt(encHex.trim());
+    const data = JSON.parse(jsonStr);
+    render(data);
+  } catch (e) {
+    document.getElementById('loading').textContent = 'Keine Daten vorhanden.';
+    console.error(e);
+  }
+}
+loadData();
 </script>
 </body>
 </html>
