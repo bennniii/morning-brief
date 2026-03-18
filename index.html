@@ -113,9 +113,10 @@ function render(d) {
 // --- Load ---
 async function load() {
   try {
-    // Get key from URL fragment: #key=HEX
-    const params = new URLSearchParams(location.hash.slice(1));
-    const key = params.get('key');
+    // Get key from query param (?k=) or fragment (#key=)
+    const qp = new URLSearchParams(location.search);
+    const hp = new URLSearchParams(location.hash.slice(1));
+    const key = qp.get('k') || hp.get('key');
     if (!key) throw new Error('No key in URL');
 
     const resp = await fetch('data.enc?t='+Date.now());
